@@ -1,0 +1,18 @@
+[project]
+name = "day-planner-bot"
+version = "0.1.0"
+description = "Telegram bot that plans your day: timed blocks, tasks, agenda and reminders"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-telegram-bot[job-queue]==21.6",
+    "fastapi==0.115.0",
+    "uvicorn==0.30.6",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["planner"]

@@ -12,6 +12,7 @@ from planner.timetable import (
     classes_from_text,
     week_dates,
 )
+from planner.vision import rows_from_answer
 
 TODAY = date(2026, 8, 11)  # a Tuesday
 
@@ -204,6 +205,27 @@ def test_term_falls_back_to_the_last_import_then_to_this_week():
     saved = Term(date(2026, 8, 10), (date(2026, 9, 28),))
     assert _term([], TODAY, saved) == saved
     assert _term([], TODAY, None) == Term(date(2026, 8, 10), ())
+
+
+def test_a_vision_answer_becomes_classes():
+    answer = """{"classes": [
+        {"day": "Monday", "start": "09:30", "end": "1120", "code": "ie4727",
+         "kind": "LEC/STU", "venue": "S2-B3A_06", "weeks": "1-11"},
+        {"day": "FRI", "start": "", "end": "", "code": "", "venue": "nonsense"}
+    ]}"""
+    classes = classes_from_text(rows_from_answer(answer))
+    assert len(classes) == 1
+    assert (classes[0].weekday, classes[0].start, classes[0].title, classes[0].weeks) == (
+        0,
+        time(9, 30),
+        "IE4727 LEC @ S2-B3A_06",
+        tuple(range(1, 12)),
+    )
+
+
+def test_a_broken_vision_answer_is_ignored():
+    assert rows_from_answer("sorry, I can't read that") == ""
+    assert rows_from_answer('{"classes": "none"}') == ""
 
 
 def test_a_timetable_survives_being_written_down_and_read_back():

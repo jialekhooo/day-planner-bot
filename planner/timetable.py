@@ -1,19 +1,27 @@
 """Read a university timetable — a screenshot or its text — into weekly classes.
 
-The grid puts each class in the column of its day, so the picture is read with
-OCR and every word is placed back under the day heading it sits below. Optical
-character recognition confuses a few characters (`l` for `1`, `O` for `0`), so
-codes, times and week numbers are cleaned up before they are trusted.
+A picture is shown to a vision model first, since it copes with the small text
+of a whole-page screenshot. Failing that (no key, or no answer) it is read with
+OCR: the grid puts each class in the column of its day, so every word is placed
+back under the day heading it sits below. Optical character recognition
+confuses a few characters (`l` for `1`, `O` for `0`), so codes, times and week
+numbers are cleaned up before they are trusted.
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 
+import httpx
 from PIL import Image, ImageOps
+
+from .vision import classes_as_rows
+
+logger = logging.getLogger(__name__)
 
 DAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 KINDS = ("LEC/STU", "LEC", "STU", "TUT", "LAB", "SEM", "DES", "PRJ")
@@ -214,6 +222,16 @@ def classes_as_text(classes: list[Class]) -> str:
 
 
 def classes_from_image(image: bytes) -> list[Class]:
+    """Read the grid in a picture, by vision model where possible, else by OCR."""
+    try:
+        seen = classes_from_text(classes_as_rows(image))
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        logger.warning("Vision reading failed, falling back to OCR: %s", exc)
+        seen = []
+    return seen or classes_by_ocr(image)
+
+
+def classes_by_ocr(image: bytes) -> list[Class]:
     """Read the grid in a screenshot, column by column.
 
     How well OCR reads a picture depends on how large the text is rendered, and

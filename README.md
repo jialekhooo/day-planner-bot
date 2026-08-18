@@ -43,10 +43,11 @@ Both are remembered for the next import; without them week 1 is this week.
 Sending a timetable again replaces the last import rather than doubling it, and
 `/timetable clear` removes the classes from today onwards.
 
-Send the screenshot itself rather than a photo of your screen, cropped to the
-grid if you can — the picture is read at several sizes and the best reading
-wins, but a small or blurred grid still defeats it. `/timetable 10 Aug recess
-28 Sep` on its own re-dates the timetable it last read, without a new picture.
+The picture is read by a vision model when `GEMINI_API_KEY` (free tier, from
+https://aistudio.google.com/apikey) or `OPENAI_API_KEY` is set, and by OCR
+otherwise; a screenshot beats a photo of your screen either way. `/timetable 10
+Aug recess 28 Sep` on its own re-dates the timetable it last read, without a
+new picture.
 
 If the picture reads badly, type the rows instead — one class a line, naming
 its day:

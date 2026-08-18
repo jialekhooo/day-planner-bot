@@ -48,6 +48,21 @@ def clashing(plans: list[Plan]) -> set[int]:
     return clashes
 
 
+def clashes_with(plan: Plan, plans: list[Plan]) -> list[Plan]:
+    """The plans this one runs over, so a warning can name them."""
+    if not plan.timed:
+        return []
+    start, end = span(plan)
+    found = []
+    for other in plans:
+        if other.id == plan.id or not other.timed or other.done:
+            continue
+        other_start, other_end = span(other)
+        if start < other_end and other_start < end:
+            found.append(other)
+    return sorted(found, key=span)
+
+
 def free_gaps(
     plans: list[Plan],
     day: date,

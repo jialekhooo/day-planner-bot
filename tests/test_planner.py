@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 
 import pytest
 
-from planner.agenda import clashing, free_gaps, local_today, span
+from planner.agenda import clashes_with, clashing, free_gaps, local_today, span
 from planner.bot import _term
 from planner.parsing import ParseError, parse_date, parse_entries, parse_entry, parse_time
 from planner.storage import Plan, Storage, Term
@@ -68,6 +68,22 @@ def test_parses_several_lines_keeping_errors_per_line():
 
 def test_untimed_plans_never_clash():
     assert clashing([_plan(1, None, None), _plan(2, None, None)]) == set()
+
+
+def test_a_new_block_names_what_it_runs_into():
+    gym = _plan(1, time(9, 0), time(11, 0))
+    call = _plan(2, time(10, 0), time(12, 0))
+    later = _plan(3, time(13, 0), time(14, 0))
+    assert clashes_with(call, [gym, call, later]) == [gym]
+    assert clashes_with(later, [gym, call, later]) == []
+
+
+def test_a_finished_or_untimed_plan_is_no_clash():
+    done = Plan(id=1, day=TODAY, title="Gym", start=time(9, 0), end=time(11, 0), done=True)
+    task = _plan(2, None, None)
+    call = _plan(3, time(10, 0), time(12, 0))
+    assert clashes_with(call, [done, task, call]) == []
+    assert clashes_with(task, [done, call, task]) == []
 
 
 def test_overlapping_blocks_are_flagged():

@@ -22,7 +22,15 @@ from telegram.ext import (
     filters,
 )
 
-from .agenda import DAY_END, DAY_START, clashing, free_gaps, local_now, local_today
+from .agenda import (
+    DAY_END,
+    DAY_START,
+    clashes_with,
+    clashing,
+    free_gaps,
+    local_now,
+    local_today,
+)
 from .parsing import Entry, ParseError, parse_date, parse_entries, parse_entry, parse_time
 from .storage import DEFAULT_AGENDA_AT, DEFAULT_UTC_OFFSET_MINUTES, Plan, Storage, Term
 from .timetable import (
@@ -40,6 +48,7 @@ DB_PATH = os.environ.get("PLANNER_DB", "planner.sqlite3")
 NUDGE_AHEAD = timedelta(minutes=30)
 TIMETABLE = "timetable"
 SEMESTER_WEEKS = 14
+CLASHES_SHOWN = 5  # a term's import can clash in many places; the rest are counted
 
 Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
@@ -195,6 +204,26 @@ def _added_lines(entries: list[tuple[int, Entry]], today: date) -> list[str]:
     return [_block(_aligned(rows))]
 
 
+def _clash_lines(storage: Storage, user_id: int, refs: list[int], today: date) -> list[str]:
+    """A warning naming what each new plan runs into, so a double booking is obvious."""
+    lines: list[str] = []
+    for ref in refs:
+        plan = storage.get_plan(user_id, ref)
+        if plan is None:
+            continue
+        against = clashes_with(plan, storage.plans_on(user_id, plan.day))
+        if not against:
+            continue
+        lines.append(
+            f"⚠️ <b>Clash</b> on {escape(_day_label(plan.day, today).split(' · ')[0])}: "
+            f"#{plan.id} {escape(_clock(plan))} {escape(plan.title)} runs into "
+            + ", ".join(
+                f"#{other.id} {escape(_clock(other))} {escape(other.title)}" for other in against
+            )
+        )
+    return lines
+
+
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Store every line of the message as a block or a task."""
     storage = _storage(context)
@@ -219,15 +248,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if stored:
         lines.append(f"✅ <b>Added {len(stored)}</b>")
         lines.extend(_added_lines(stored, today))
-        days = {entry.day for _, entry in stored}
-        for day in sorted(days):
-            plans = storage.plans_on(user_id, day)
-            clashes = clashing(plans) & {ref for ref, _ in stored}
-            if clashes:
-                lines.append(
-                    f"⚠️ Clash on {escape(_day_label(day, today))} — "
-                    f"{', '.join(f'#{ref}' for ref in sorted(clashes))} overlap something else."
-                )
+        lines.extend(_clash_lines(storage, user_id, [ref for ref, _ in stored], today))
     if problems:
         lines.append("⚠️ <b>Couldn't read</b>")
         lines.append(_block(problems))
@@ -388,6 +409,7 @@ async def move(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     ]
                 )
             ),
+            *_clash_lines(storage, user_id, [moved.id], today_local),
         ],
     )
 
@@ -550,8 +572,11 @@ async def _import_classes(
     weeks = max((max(lesson.weeks) for lesson in classes if lesson.weeks), default=SEMESTER_WEEKS)
     storage.delete_from_source(user_id, TIMETABLE, since=term.week_one)
     dated = week_dates(classes, term.week_one, weeks, term.breaks)
-    for day, lesson in dated:
+    refs = [
         storage.add_plan(user_id, day, lesson.title, lesson.start, lesson.end, source=TIMETABLE)
+        for day, lesson in dated
+    ]
+    clashes = _clash_lines(storage, user_id, refs, today)
 
     await _send_html(
         update,
@@ -565,6 +590,12 @@ async def _import_classes(
                 + "."
                 if term.breaks
                 else "."
+            ),
+            *clashes[:CLASHES_SHOWN],
+            *(
+                [f"…and {len(clashes) - CLASHES_SHOWN} more clashes."]
+                if len(clashes) > CLASHES_SHOWN
+                else []
             ),
             "Redo it with <code>/timetable 10 Aug recess 28 Sep</code>, or "
             "<code>/timetable clear</code> to remove the classes.",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from .storage import DEFAULT_AGENDA_AT, DEFAULT_UTC_OFFSET_MINUTES, Plan, Storag
 from .timetable import (
     Class,
     TimetableError,
+    classes_as_text,
     classes_from_image,
     classes_from_text,
     week_dates,
@@ -544,6 +546,7 @@ async def _import_classes(
 
     term = _term(args, today, storage.get_term(user_id))
     storage.save_term(user_id, term)
+    storage.save_classes(user_id, classes_as_text(classes))
     weeks = max((max(lesson.weeks) for lesson in classes if lesson.weeks), default=SEMESTER_WEEKS)
     storage.delete_from_source(user_id, TIMETABLE, since=term.week_one)
     dated = week_dates(classes, term.week_one, weeks, term.breaks)
@@ -576,8 +579,9 @@ async def _import_photo(
     args: list[str],
 ) -> None:
     picture = await (await photo.get_file()).download_as_bytearray()
-    try:
-        classes = classes_from_image(bytes(picture))
+    await update.message.reply_text("📖 Reading your timetable…")
+    try:  # reading a picture takes seconds, so keep the bot answering meanwhile
+        classes = await asyncio.to_thread(classes_from_image, bytes(picture))
     except TimetableError as exc:
         await update.message.reply_text(str(exc))
         return
@@ -601,7 +605,10 @@ async def timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     body = "\n".join((update.message.text or "").splitlines()[1:])
-    await _import_classes(update, context, classes_from_text(body), args)
+    typed = classes_from_text(body)
+    # `/timetable 10 Aug recess 28 Sep` on its own re-dates the timetable already read
+    remembered = classes_from_text(storage.get_classes(user_id)) if not typed else []
+    await _import_classes(update, context, typed or remembered, args)
 
 
 async def timetable_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

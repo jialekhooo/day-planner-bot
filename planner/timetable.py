@@ -13,13 +13,15 @@ import re
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 
+from PIL import Image, ImageOps
+
 DAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 KINDS = ("LEC/STU", "LEC", "STU", "TUT", "LAB", "SEM", "DES", "PRJ")
 
 _CODE = re.compile(r"^[A-Z]{2}\d{4}$")
 _DIGITS = re.compile(r"\d{4}$")
 _TIMES = re.compile(r"(\d{4})\s*(?:T[O0]|[-–—~])\s*(\d{4})")
-_WEEKS = re.compile(r"WK([\d,\-]+)")
+_WEEKS = re.compile(r"(?:^|[^A-Z])WK?(\d[\d,\-]*)")  # Wk1-11, and Wl2,13 as OCR leaves it
 
 
 class TimetableError(Exception):
@@ -192,29 +194,85 @@ def classes_from_text(text: str) -> list[Class]:
     return classes_from_cells(cells)
 
 
-def classes_from_image(image: bytes) -> list[Class]:
-    """Read the grid in a screenshot, column by column."""
-    import pytesseract  # noqa: PLC0415 - optional, only needed for pictures
-    from PIL import Image
-
-    picture = Image.open(io.BytesIO(image)).convert("L")
-    picture = picture.resize((picture.width * 3, picture.height * 3), Image.LANCZOS)
-    found = pytesseract.image_to_data(
-        picture, config="--psm 6", output_type=pytesseract.Output.DICT
+def classes_as_text(classes: list[Class]) -> str:
+    """The rows `classes_from_text` reads, so an import can be kept and redone."""
+    return "\n".join(
+        " ".join(
+            part
+            for part in (
+                DAYS[lesson.weekday],
+                f"{lesson.start.strftime('%H%M')}-{lesson.end.strftime('%H%M')}",
+                lesson.code,
+                lesson.kind,
+                lesson.venue,
+                f"Wk{','.join(str(week) for week in lesson.weeks)}" if lesson.weeks else "",
+            )
+            if part
+        )
+        for lesson in classes
     )
-    words = [
+
+
+def classes_from_image(image: bytes) -> list[Class]:
+    """Read the grid in a screenshot, column by column.
+
+    How well OCR reads a picture depends on how large the text is rendered, and
+    a screenshot of a whole page leaves it small, so the picture is read a few
+    times at different sizes and the reading that finds the most classes wins.
+    """
+    picture = ImageOps.autocontrast(Image.open(io.BytesIO(image)).convert("L"))
+    best: list[Class] = []
+    saw_days = False
+    for width, mode in _PASSES:
+        words = _read(picture, width, mode)
+        columns = _day_columns(words)
+        if not columns:
+            continue
+        saw_days = True
+        found = classes_from_cells(_cells(words, columns))
+        if _fullness(found) > _fullness(best):
+            best = found
+    if not saw_days:
+        raise TimetableError(
+            "I couldn't find the day headings (MON, TUE, …) in that picture. "
+            "Send the screenshot itself rather than a photo of your screen, "
+            "cropped to the timetable if you can."
+        )
+    if not best:
+        raise TimetableError(
+            "I found the days but couldn't read the classes in that picture. "
+            "Try a sharper screenshot cropped to the timetable grid."
+        )
+    return best
+
+
+_PASSES = ((2000, 6), (3200, 6), (3200, 4), (4400, 6), (4400, 4))
+_GRID = 2200  # positions are reported at this width, whatever the pass read
+
+
+def _fullness(classes: list[Class]) -> tuple[int, int]:
+    """How good a reading is: the classes found, then the weeks read off them."""
+    return len(classes), sum(len(lesson.weeks) for lesson in classes)
+
+
+def _read(picture: Image.Image, width: int, mode: int) -> list[tuple[float, int, str]]:
+    """Every word Tesseract sees, with where it sits, at one size and page mode."""
+    import pytesseract  # noqa: PLC0415 - installed with Tesseract, only for pictures
+
+    scale = width / _GRID
+    grown = picture.resize((width, int(picture.height * width / picture.width)), Image.LANCZOS)
+    found = pytesseract.image_to_data(
+        grown, config=f"--psm {mode}", output_type=pytesseract.Output.DICT
+    )
+    return [
         (
-            found["left"][index] + found["width"][index] / 2,
-            found["top"][index],
+            (found["left"][index] + found["width"][index] / 2) / scale,
+            int(found["top"][index] / scale),
             found["text"][index].strip(),
         )
         for index in range(len(found["text"]))
         if found["text"][index].strip()
     ]
-    columns = _day_columns(words)
-    if not columns:
-        raise TimetableError("I couldn't find the day headings (MON, TUE, …) in that picture.")
-    return classes_from_cells(_cells(words, columns))
 
 
 def _day_columns(words: list[tuple[float, int, str]]) -> list[tuple[int, float, float]]:

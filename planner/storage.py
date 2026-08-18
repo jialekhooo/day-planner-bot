@@ -30,7 +30,8 @@ CREATE INDEX IF NOT EXISTS idx_plans_user_day ON plans (user_id, day);
 CREATE TABLE IF NOT EXISTS terms (
     user_id INTEGER PRIMARY KEY,
     week_one TEXT NOT NULL,
-    breaks TEXT NOT NULL DEFAULT ''
+    breaks TEXT NOT NULL DEFAULT '',
+    classes TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS reminders (
@@ -83,14 +84,15 @@ class Storage:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
-        self._add_source_column()
+        self._add_column("plans", "source", "TEXT NOT NULL DEFAULT 'you'")
+        self._add_column("terms", "classes", "TEXT NOT NULL DEFAULT ''")
         self._conn.commit()
 
-    def _add_source_column(self) -> None:
-        """Databases made before timetable import have no source column."""
-        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(plans)")}
-        if "source" not in columns:
-            self._conn.execute("ALTER TABLE plans ADD COLUMN source TEXT NOT NULL DEFAULT 'you'")
+    def _add_column(self, table: str, column: str, kind: str) -> None:
+        """Bring a database made by an older version up to the schema above."""
+        columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     def close(self) -> None:
         self._conn.close()
@@ -220,6 +222,19 @@ class Storage:
         cursor = self._conn.execute(query, params)
         self._conn.commit()
         return cursor.rowcount
+
+    def get_classes(self, user_id: int) -> str:
+        """The timetable last imported, as it was written down."""
+        row = self._conn.execute(
+            "SELECT classes FROM terms WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return "" if row is None else row["classes"]
+
+    def save_classes(self, user_id: int, classes: str) -> None:
+        self._conn.execute(
+            "UPDATE terms SET classes = ? WHERE user_id = ?", (classes, user_id)
+        )
+        self._conn.commit()
 
     def get_term(self, user_id: int) -> Term | None:
         """When teaching week one starts, and which weeks are holidays."""

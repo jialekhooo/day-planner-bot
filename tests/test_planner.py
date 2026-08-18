@@ -6,7 +6,12 @@ from planner.agenda import clashing, free_gaps, local_today, span
 from planner.bot import _term
 from planner.parsing import ParseError, parse_date, parse_entries, parse_entry, parse_time
 from planner.storage import Plan, Storage, Term
-from planner.timetable import classes_from_cells, classes_from_text, week_dates
+from planner.timetable import (
+    classes_as_text,
+    classes_from_cells,
+    classes_from_text,
+    week_dates,
+)
 
 TODAY = date(2026, 8, 11)  # a Tuesday
 
@@ -152,6 +157,7 @@ def test_reads_the_weeks_a_class_runs_in():
     weeks = [lesson.weeks for lesson in classes_from_text(TIMETABLE)]
     assert weeks == [tuple(range(1, 12)), (), tuple(range(2, 14))]
     assert classes_from_text("MON 0930to1120 IE4727 LEC Wk12,13")[0].weeks == (12, 13)
+    assert classes_from_text("MON 0930to1120 IE4727 LEC W12,13")[0].weeks == (12, 13)  # OCR
 
 
 def test_ocr_slips_are_read_as_the_course_code():
@@ -198,6 +204,20 @@ def test_term_falls_back_to_the_last_import_then_to_this_week():
     saved = Term(date(2026, 8, 10), (date(2026, 9, 28),))
     assert _term([], TODAY, saved) == saved
     assert _term([], TODAY, None) == Term(date(2026, 8, 10), ())
+
+
+def test_a_timetable_survives_being_written_down_and_read_back():
+    classes = classes_from_text(TIMETABLE)
+    assert classes_from_text(classes_as_text(classes)) == classes
+
+
+def test_the_timetable_is_remembered(tmp_path):
+    storage = Storage(tmp_path / "planner.sqlite3")
+    storage.save_term(1, Term(date(2026, 8, 10)))
+    storage.save_classes(1, "MON 0930-1120 IE4727 LEC LT19")
+    assert storage.get_classes(1) == "MON 0930-1120 IE4727 LEC LT19"
+    assert storage.get_classes(2) == ""
+    storage.close()
 
 
 def test_the_term_is_remembered(tmp_path):

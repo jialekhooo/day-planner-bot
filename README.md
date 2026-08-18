@@ -20,9 +20,9 @@ one-hour block, and a line without a time becomes a task for that day. Dates can
 be written as `today`, `tonight`, `tomorrow`, `friday`, `next tue`, `14/8` or
 `14 Aug`; times as `9am`, `9.30pm`, `21:30` or `0930`.
 
-Each plan gets a number of its own (`#3`) counting from 1 for every user, which
-is what `/done`, `/move` and `/delete` take. Overlapping blocks are logged but
-flagged as a clash.
+Lists show no numbers: `/done`, `/move` and `/delete` take a few words of the
+title instead (`/done gym`) and act on the nearest matching plan. Numbers still
+work if you know them. Overlapping blocks are logged but flagged as a clash.
 
 ## Class timetables
 
@@ -77,10 +77,10 @@ Reading pictures needs Tesseract (`apt-get install tesseract-ocr`); the
 | Command | Purpose |
 | --- | --- |
 | `/plan <line>` | Add a plan (alias `/add`; plain messages work too) |
-| `/done 3` | Tick a plan off (several numbers at once are fine) |
-| `/undone 3` | Put it back on the list |
-| `/move 3 tomorrow 4pm-5pm` | Reschedule it |
-| `/delete 3` | Remove it |
+| `/done gym` | Tick a plan off |
+| `/undone gym` | Put it back on the list |
+| `/move gym to tomorrow 4pm-5pm` | Reschedule it |
+| `/delete gym` | Remove it |
 | `/clear [day\|all]` | Wipe a day, after a confirmation |
 | `/timetable 10 Aug recess 28 Sep` | Import a class timetable (`/timetable clear` removes it) |
 

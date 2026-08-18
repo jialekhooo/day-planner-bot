@@ -333,3 +333,23 @@ def test_only_mail_and_meeting_talk_goes_to_the_assistant():
     assert bot.ASSISTANT_HINT.search("reschedule my 3pm meeting to Friday")
     assert not bot.ASSISTANT_HINT.search("9am-11am Gym")
     assert not bot.ASSISTANT_HINT.search("buy milk")
+
+def test_a_plan_can_be_named_instead_of_numbered(tmp_path):
+    storage = Storage(tmp_path / "planner.sqlite3")
+    storage.add_plan(1, TODAY - timedelta(days=7), "Gym", time(9, 0), time(10, 0))
+    soon = storage.add_plan(1, TODAY + timedelta(days=1), "Gym session", time(9, 0), None)
+    storage.add_plan(2, TODAY, "Gym", time(9, 0), None)
+    assert bot._picked(storage, 1, ["gym"], TODAY) == [soon]
+    assert bot._picked(storage, 1, ["#3"], TODAY) == [3]
+    assert bot._picked(storage, 1, ["swimming"], TODAY) == []
+    storage.close()
+
+
+def test_move_splits_the_plan_from_the_new_time():
+    assert bot._split_move(["gym", "to", "tomorrow", "4pm"]) == (["gym"], ["tomorrow", "4pm"])
+    assert bot._split_move(["3", "tomorrow", "4pm"]) == (["3"], ["tomorrow", "4pm"])
+
+
+def test_lists_show_no_plan_numbers():
+    plan = Plan(7, TODAY, "Gym", time(9, 0), time(10, 0), False)
+    assert all("#7" not in cell for cell in bot._plan_rows([plan], set())[0])

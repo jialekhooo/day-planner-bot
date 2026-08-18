@@ -189,6 +189,18 @@ class Storage:
         ).fetchone()
         return None if row is None else _to_plan(row)
 
+    def find_plans(self, user_id: int, text: str) -> list[Plan]:
+        """Plans whose title contains these words, so a name works instead of a number."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM plans
+            WHERE user_id = ? AND lower(title) LIKE ?
+            ORDER BY day ASC, start_time IS NULL, start_time ASC, ref ASC
+            """,
+            (user_id, f"%{text.strip().lower()}%"),
+        )
+        return [_to_plan(row) for row in rows]
+
     def set_done(self, user_id: int, ref: int, done: bool) -> bool:
         cursor = self._conn.execute(
             "UPDATE plans SET done = ? WHERE user_id = ? AND ref = ?",

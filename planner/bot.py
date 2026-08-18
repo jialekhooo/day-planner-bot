@@ -116,7 +116,6 @@ def _clock(plan: Plan) -> str:
 def _plan_rows(plans: list[Plan], clashes: set[int]) -> list[tuple[str, ...]]:
     return [
         (
-            f"#{plan.id}",
             "✔" if plan.done else "·",
             _clock(plan),
             plan.title,
@@ -173,7 +172,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [
             "👋 <b>Your day planner</b>",
             SAMPLE,
-            "Then <code>/today</code> for the plan, <code>/done 3</code> to tick something off, "
+            "Then <code>/today</code> for the plan, <code>/done gym</code> to tick something "
+            "off, "
             "<code>/commands</code> for everything else.",
             "Studying? Send a photo of your class timetable and I'll put the whole term in.",
             "Connect Google with <code>/connect</code> and I'll also book meetings, send "
@@ -199,7 +199,6 @@ async def commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def _added_lines(entries: list[tuple[int, Entry]], today: date) -> list[str]:
     rows = [
         (
-            f"#{ref}",
             _day_label(entry.day, today).split(" · ")[0],
             _clock(Plan(ref, entry.day, entry.title, entry.start, entry.end, False)),
             entry.title,
@@ -221,9 +220,9 @@ def _clash_lines(storage: Storage, user_id: int, refs: list[int], today: date) -
             continue
         lines.append(
             f"⚠️ <b>Clash</b> on {escape(_day_label(plan.day, today).split(' · ')[0])}: "
-            f"#{plan.id} {escape(_clock(plan))} {escape(plan.title)} runs into "
+            f"{escape(_clock(plan))} {escape(plan.title)} runs into "
             + ", ".join(
-                f"#{other.id} {escape(_clock(other))} {escape(other.title)}" for other in against
+                f"{escape(_clock(other))} {escape(other.title)}" for other in against
             )
         )
     return lines
@@ -321,7 +320,6 @@ async def todo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today_local = _today(storage, user_id)
     rows = [
         (
-            f"#{plan.id}",
             _day_label(plan.day, today_local).split(" · ")[0],
             _clock(plan),
             plan.title,
@@ -339,13 +337,32 @@ def _numbers(args: list[str]) -> list[int]:
     return [int(arg.lstrip("#")) for arg in args if arg.lstrip("#").isdigit()]
 
 
+def _picked(storage: Storage, user_id: int, args: list[str], today: date) -> list[int]:
+    """Which plans the words point at — a few words of the title, nearest day first."""
+    refs = _numbers(args)
+    if refs:
+        return refs
+    text = " ".join(args).strip()
+    if not text:
+        return []
+    found = sorted(
+        storage.find_plans(user_id, text),
+        key=lambda plan: (plan.done, plan.day < today, abs((plan.day - today).days)),
+    )
+    return [found[0].id] if found else []
+
+
 async def _mark(update: Update, context: ContextTypes.DEFAULT_TYPE, done: bool) -> None:
     storage = _storage(context)
     user_id = update.effective_user.id
-    refs = _numbers(context.args or [])
+    args = context.args or []
+    refs = _picked(storage, user_id, args, _today(storage, user_id))
     if not refs:
+        word = "done" if done else "undone"
         await update.message.reply_text(
-            "Give me the number, e.g. /done 3" if done else "Give me the number, e.g. /undone 3"
+            f"Nothing matched that — name the plan, e.g. /{word} gym."
+            if args
+            else f"Name the plan, e.g. /{word} gym."
         )
         return
     changed = [ref for ref in refs if storage.set_done(user_id, ref, done)]
@@ -354,12 +371,10 @@ async def _mark(update: Update, context: ContextTypes.DEFAULT_TYPE, done: bool) 
     lines = []
     if changed:
         titles = [storage.get_plan(user_id, ref) for ref in changed]
-        rows = [
-            (f"#{plan.id}", plan.title) for plan in titles if plan is not None
-        ]
+        rows = [(_clock(plan), plan.title) for plan in titles if plan is not None]
         lines += [f"{'✅' if done else '↩️'} <b>{word}</b>", _block(_aligned(rows))]
     if missing:
-        lines.append(f"No plan numbered {', '.join(f'#{ref}' for ref in missing)}.")
+        lines.append("Couldn't find some of those.")
     left = len(storage.open_plans(user_id))
     lines.append(f"<b>{left} open</b> in total")
     await _send_html(update, lines)
@@ -373,30 +388,41 @@ async def undone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _mark(update, context, False)
 
 
+def _split_move(args: list[str]) -> tuple[list[str], list[str]]:
+    """`gym to tomorrow 4pm` splits into which plan and when; a number needs no `to`."""
+    if args and args[0].lstrip("#").isdigit():
+        return args[:1], args[1:]
+    for position in range(len(args) - 1, -1, -1):
+        if args[position].lower() == "to":
+            return args[:position], args[position + 1 :]
+    return args[:1], args[1:]
+
+
 async def move(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reschedule a plan: /move 3 tomorrow 4pm-5pm."""
+    """Reschedule a plan: /move gym to tomorrow 4pm-5pm."""
     storage = _storage(context)
     user_id = update.effective_user.id
     args = context.args or []
-    refs = _numbers(args[:1])
-    if not refs or len(args) < 2:
-        await update.message.reply_text("Use: /move 3 tomorrow 4pm-5pm")
+    today_local = _today(storage, user_id)
+    which, when = _split_move(args)
+    refs = _picked(storage, user_id, which, today_local)
+    if not refs or not when:
+        await update.message.reply_text("Use: /move gym to tomorrow 4pm-5pm")
         return
     ref = refs[0]
     plan = storage.get_plan(user_id, ref)
     if plan is None:
-        await update.message.reply_text(f"No plan numbered #{ref}.")
+        await update.message.reply_text("I couldn't find that plan.")
         return
-    today_local = _today(storage, user_id)
     try:
-        entry = parse_entry(f"{' '.join(args[1:])} {plan.title}", today=today_local)
+        entry = parse_entry(f"{' '.join(when)} {plan.title}", today=today_local)
     except ParseError as exc:
         await update.message.reply_text(str(exc))
         return
     storage.move_plan(user_id, ref, entry.day, entry.start, entry.end)
     moved = storage.get_plan(user_id, ref)
     if moved is None:
-        await update.message.reply_text(f"No plan numbered #{ref}.")
+        await update.message.reply_text("I couldn't find that plan.")
         return
     await _send_html(
         update,
@@ -406,7 +432,6 @@ async def move(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 _aligned(
                     [
                         (
-                            f"#{moved.id}",
                             _day_label(moved.day, today_local).split(" · ")[0],
                             _clock(moved),
                             moved.title,
@@ -422,9 +447,10 @@ async def move(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     storage = _storage(context)
     user_id = update.effective_user.id
-    refs = _numbers(context.args or [])
+    args = context.args or []
+    refs = _picked(storage, user_id, args, _today(storage, user_id))
     if not refs:
-        await update.message.reply_text("Give me the number, e.g. /delete 3")
+        await update.message.reply_text("Name the plan, e.g. /delete gym.")
         return
     removed = [
         plan
@@ -432,9 +458,9 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if plan is not None and storage.delete_plan(user_id, plan.id)
     ]
     if not removed:
-        await update.message.reply_text("Nothing matched those numbers.")
+        await update.message.reply_text("Nothing matched that.")
         return
-    rows = [(f"#{plan.id}", _clock(plan), plan.title) for plan in removed]
+    rows = [(_clock(plan), plan.title) for plan in removed]
     await _send_html(update, ["🗑 <b>Deleted</b>", _block(_aligned(rows))])
 
 
@@ -830,10 +856,10 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 COMMANDS: tuple[Command, ...] = (
     Command(("plan", "add"), "/plan <line>", "Add a block or a task", add, "Planning"),
-    Command(("move",), "/move 3 tomorrow 4pm", "Reschedule a plan", move, "Planning"),
-    Command(("done",), "/done 3", "Tick a plan off", done, "Planning"),
-    Command(("undone", "reopen"), "/undone 3", "Put it back on the list", undone, "Planning"),
-    Command(("delete", "del"), "/delete 3", "Remove a plan", delete, "Planning"),
+    Command(("move",), "/move gym to tomorrow 4pm", "Reschedule a plan", move, "Planning"),
+    Command(("done",), "/done gym", "Tick a plan off", done, "Planning"),
+    Command(("undone", "reopen"), "/undone gym", "Put it back on the list", undone, "Planning"),
+    Command(("delete", "del"), "/delete gym", "Remove a plan", delete, "Planning"),
     Command(("clear",), "/clear [day|all]", "Wipe a day (asks first)", clear, "Planning"),
     Command(("today",), "/today", "Today's plan", today, "Your day"),
     Command(("tomorrow",), "/tomorrow", "Tomorrow's plan", tomorrow, "Your day"),

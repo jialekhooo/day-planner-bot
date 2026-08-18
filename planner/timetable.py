@@ -287,13 +287,28 @@ def _looks_like_code(word: str) -> bool:
     return bool(_as_code(word) or re.fullmatch(r"\d{5,6}", bare))
 
 
-def week_dates(classes: list[Class], week_one: date, weeks: int) -> list[tuple[date, Class]]:
-    """Every date a class falls on, from week one for the given number of weeks."""
+def week_dates(
+    classes: list[Class],
+    week_one: date,
+    weeks: int,
+    breaks: tuple[date, ...] = (),
+) -> list[tuple[date, Class]]:
+    """Every date a class falls on, from week one, skipping the weeks off.
+
+    A break week (given as any date in it, e.g. a recess week) holds no classes
+    and does not count as a teaching week, so the numbering carries on after it.
+    """
     monday = week_one - timedelta(days=week_one.weekday())
+    off = {day - timedelta(days=day.weekday()) for day in breaks}
     dated = []
-    for number in range(1, weeks + 1):
+    number = 1
+    while number <= weeks:
+        if monday in off:
+            monday += timedelta(days=7)
+            continue
         for lesson in classes:
-            if lesson.weeks and number not in lesson.weeks:
-                continue
-            dated.append((monday + timedelta(days=(number - 1) * 7 + lesson.weekday), lesson))
+            if not lesson.weeks or number in lesson.weeks:
+                dated.append((monday + timedelta(days=lesson.weekday), lesson))
+        monday += timedelta(days=7)
+        number += 1
     return sorted(dated, key=lambda pair: (pair[0], pair[1].start))

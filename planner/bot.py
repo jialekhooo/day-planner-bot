@@ -23,7 +23,7 @@ from telegram.ext import (
 
 from .agenda import DAY_END, DAY_START, clashing, free_gaps, local_now, local_today
 from .parsing import Entry, ParseError, parse_date, parse_entries, parse_entry, parse_time
-from .storage import DEFAULT_AGENDA_AT, DEFAULT_UTC_OFFSET_MINUTES, Plan, Storage
+from .storage import DEFAULT_AGENDA_AT, DEFAULT_UTC_OFFSET_MINUTES, Plan, Storage, Term
 from .timetable import (
     Class,
     TimetableError,
@@ -459,15 +459,43 @@ async def free(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-def _week_one(args: list[str], today: date) -> date:
-    """The Monday of teaching week one — this week's Monday unless told otherwise."""
-    given = today
-    if args:
-        try:
-            given = parse_date(" ".join(args), today)
-        except ParseError:
-            given = today
-    return given - timedelta(days=given.weekday())
+BREAK_WORDS = ("recess", "break", "holiday", "skip")
+
+
+def _monday(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+def _term(args: list[str], today: date, saved: Term | None) -> Term:
+    """`10 Aug recess 28 Sep` — when week one starts and which weeks are off.
+
+    Anything left out keeps what the last import used, or this week for a first one.
+    """
+    parts: list[list[str]] = [[]]
+    for word in args:
+        if word.lower().strip(",") in BREAK_WORDS:
+            parts.append([])
+            continue
+        parts[-1].append(word)
+    week_one = _read_date(" ".join(parts[0]), today)
+    breaks = tuple(
+        day
+        for part in parts[1:]
+        for piece in " ".join(part).split(",")
+        if (day := _read_date(piece, today)) is not None
+    )
+    if week_one is None and saved is not None:
+        return Term(saved.week_one, breaks or saved.breaks)
+    return Term(_monday(week_one or today), breaks)
+
+
+def _read_date(text: str, today: date) -> date | None:
+    if not text.strip():
+        return None
+    try:
+        return parse_date(text.strip(), today)
+    except ParseError:
+        return None
 
 
 def _weeks_label(weeks: tuple[int, ...]) -> str:
@@ -508,16 +536,17 @@ async def _import_classes(
             update,
             [
                 "I couldn't find any classes in that.",
-                "Send the timetable screenshot itself, or type the rows like "
+                "Send the timetable screenshot itself, or type the rows out like "
                 "<code>MON 0930-1120 IE4727 LEC S2-B3A_06</code>.",
             ],
         )
         return
 
-    week_one = _week_one(args, today)
+    term = _term(args, today, storage.get_term(user_id))
+    storage.save_term(user_id, term)
     weeks = max((max(lesson.weeks) for lesson in classes if lesson.weeks), default=SEMESTER_WEEKS)
-    storage.delete_from_source(user_id, TIMETABLE, since=week_one)
-    dated = week_dates(classes, week_one, weeks)
+    storage.delete_from_source(user_id, TIMETABLE, since=term.week_one)
+    dated = week_dates(classes, term.week_one, weeks, term.breaks)
     for day, lesson in dated:
         storage.add_plan(user_id, day, lesson.title, lesson.start, lesson.end, source=TIMETABLE)
 
@@ -526,9 +555,16 @@ async def _import_classes(
         [
             f"📚 <b>Timetable added</b> — {len(classes)} classes, {len(dated)} sessions",
             _block(_aligned(_class_rows(classes, weeks))),
-            f"Week 1 starts {escape(week_one.strftime('%a %d %b %Y'))}. "
-            "Send <code>/timetable clear</code> to remove them, or "
-            "<code>/timetable 17 Aug</code> to redo it from another week 1.",
+            f"Week 1 starts {escape(term.week_one.strftime('%a %d %b %Y'))}"
+            + (
+                ", off the week of "
+                + ", ".join(escape(_monday(day).strftime("%d %b")) for day in term.breaks)
+                + "."
+                if term.breaks
+                else "."
+            ),
+            "Redo it with <code>/timetable 10 Aug recess 28 Sep</code>, or "
+            "<code>/timetable clear</code> to remove the classes.",
         ],
     )
 
@@ -691,7 +727,7 @@ COMMANDS: tuple[Command, ...] = (
     Command(("free", "gaps"), "/free [date]", "Where your free time is", free, "Your day"),
     Command(
         ("timetable", "classes"),
-        "/timetable [wk 1 date]",
+        "/timetable 10 Aug recess 28 Sep",
         "Import a class timetable",
         timetable,
         "Planning",

@@ -36,11 +36,15 @@ Mon  14:30–17:20  ES5003 LEC @ LT19          wk 1–13
 Fri  10:30–12:20  HW0288 TUT @ LHN-TR+18     wk 2–13
 ```
 
-Week 1 is taken to be the current week unless you say otherwise, as a caption
-or with the command: `/timetable 17 Aug`. Sending it again replaces the last
-import rather than doubling it, and `/timetable clear` removes the classes from
-today onwards. If the picture reads badly, type the rows instead — one class a
-line, naming its day:
+Tell it when the term starts and which weeks are off, as a caption on the photo
+or with the command: `/timetable 10 Aug recess 28 Sep`. A recess week holds no
+classes and doesn't count as a teaching week, so week 8 lands the week after it.
+Both are remembered for the next import; without them week 1 is this week.
+Sending a timetable again replaces the last import rather than doubling it, and
+`/timetable clear` removes the classes from today onwards.
+
+If the picture reads badly, type the rows instead — one class a line, naming
+its day:
 
 ```
 /timetable
@@ -72,7 +76,7 @@ Reading pictures needs Tesseract (`apt-get install tesseract-ocr`); the
 | `/move 3 tomorrow 4pm-5pm` | Reschedule it |
 | `/delete 3` | Remove it |
 | `/clear [day\|all]` | Wipe a day, after a confirmation |
-| `/timetable [wk 1 date]` | Import a class timetable (`/timetable clear` removes it) |
+| `/timetable 10 Aug recess 28 Sep` | Import a class timetable (`/timetable clear` removes it) |
 
 ## Reminders
 

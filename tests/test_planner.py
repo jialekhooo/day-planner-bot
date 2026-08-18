@@ -3,8 +3,9 @@ from datetime import date, datetime, time
 import pytest
 
 from planner.agenda import clashing, free_gaps, local_today, span
+from planner.bot import _term
 from planner.parsing import ParseError, parse_date, parse_entries, parse_entry, parse_time
-from planner.storage import Plan, Storage
+from planner.storage import Plan, Storage, Term
 from planner.timetable import classes_from_cells, classes_from_text, week_dates
 
 TODAY = date(2026, 8, 11)  # a Tuesday
@@ -173,6 +174,39 @@ def test_classes_become_a_date_each_week_they_run():
     assert dated[0] == (date(2026, 8, 10), classes[0])
     assert [day for day, lesson in dated if lesson is classes[2]][0] == date(2026, 8, 21)
     assert len(dated) == 11 + 13 + 12
+
+
+def test_a_break_week_is_skipped_and_does_not_count():
+    classes = classes_from_text("MON 0930-1120 IE4727 LEC LT19")
+    dated = week_dates(classes, date(2026, 8, 10), 3, breaks=(date(2026, 9, 28),))
+    assert [day for day, _ in dated][:3] == [
+        date(2026, 8, 10),
+        date(2026, 8, 17),
+        date(2026, 8, 24),
+    ]
+    dated = week_dates(classes, date(2026, 8, 10), 9, breaks=(date(2026, 9, 30),))
+    assert date(2026, 9, 28) not in [day for day, _ in dated]
+    assert [day for day, _ in dated][-1] == date(2026, 10, 12)  # week 9, a week later
+
+
+def test_term_reads_week_one_and_the_recess_week():
+    term = _term(["10", "Aug", "recess", "28", "Sep"], TODAY, None)
+    assert term == Term(date(2026, 8, 10), (date(2026, 9, 28),))
+
+
+def test_term_falls_back_to_the_last_import_then_to_this_week():
+    saved = Term(date(2026, 8, 10), (date(2026, 9, 28),))
+    assert _term([], TODAY, saved) == saved
+    assert _term([], TODAY, None) == Term(date(2026, 8, 10), ())
+
+
+def test_the_term_is_remembered(tmp_path):
+    storage = Storage(tmp_path / "planner.sqlite3")
+    term = Term(date(2026, 8, 10), (date(2026, 9, 28),))
+    storage.save_term(1, term)
+    assert storage.get_term(1) == term
+    assert storage.get_term(2) is None
+    storage.close()
 
 
 def test_a_timetable_import_replaces_the_last_one(tmp_path):

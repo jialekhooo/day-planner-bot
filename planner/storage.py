@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS plans (
 
 CREATE INDEX IF NOT EXISTS idx_plans_user_day ON plans (user_id, day);
 
+CREATE TABLE IF NOT EXISTS terms (
+    user_id INTEGER PRIMARY KEY,
+    week_one TEXT NOT NULL,
+    breaks TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS reminders (
     user_id INTEGER PRIMARY KEY,
     chat_id INTEGER NOT NULL,
@@ -50,6 +56,14 @@ class Plan:
     @property
     def timed(self) -> bool:
         return self.start is not None
+
+
+@dataclass(frozen=True)
+class Term:
+    """The Monday teaching week one starts on, and the Mondays of holiday weeks."""
+
+    week_one: date
+    breaks: tuple[date, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -206,6 +220,31 @@ class Storage:
         cursor = self._conn.execute(query, params)
         self._conn.commit()
         return cursor.rowcount
+
+    def get_term(self, user_id: int) -> Term | None:
+        """When teaching week one starts, and which weeks are holidays."""
+        row = self._conn.execute(
+            "SELECT * FROM terms WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        breaks = tuple(date.fromisoformat(day) for day in row["breaks"].split(",") if day)
+        return Term(date.fromisoformat(row["week_one"]), breaks)
+
+    def save_term(self, user_id: int, term: Term) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO terms (user_id, week_one, breaks) VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                week_one = excluded.week_one, breaks = excluded.breaks
+            """,
+            (
+                user_id,
+                term.week_one.isoformat(),
+                ",".join(day.isoformat() for day in term.breaks),
+            ),
+        )
+        self._conn.commit()
 
     def get_reminder(self, user_id: int) -> Reminder | None:
         row = self._conn.execute(

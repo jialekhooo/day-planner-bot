@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS plans (
     start_time TEXT,
     end_time TEXT,
     title TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'you',
     done INTEGER NOT NULL DEFAULT 0,
     nudged INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -68,7 +69,14 @@ class Storage:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._add_source_column()
         self._conn.commit()
+
+    def _add_source_column(self) -> None:
+        """Databases made before timetable import have no source column."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(plans)")}
+        if "source" not in columns:
+            self._conn.execute("ALTER TABLE plans ADD COLUMN source TEXT NOT NULL DEFAULT 'you'")
 
     def close(self) -> None:
         self._conn.close()
@@ -80,6 +88,7 @@ class Storage:
         title: str,
         start: time | None,
         end: time | None,
+        source: str = "you",
     ) -> int:
         """Store a plan and hand back its number, which counts from 1 per user."""
         ref = int(
@@ -89,8 +98,8 @@ class Storage:
         )
         self._conn.execute(
             """
-            INSERT INTO plans (ref, user_id, day, start_time, end_time, title)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO plans (ref, user_id, day, start_time, end_time, title, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ref,
@@ -99,6 +108,7 @@ class Storage:
                 None if start is None else start.isoformat(timespec="minutes"),
                 None if end is None else end.isoformat(timespec="minutes"),
                 title,
+                source,
             ),
         )
         self._conn.commit()
@@ -182,6 +192,17 @@ class Storage:
         if day is not None:
             query += " AND day = ?"
             params.append(day.isoformat())
+        cursor = self._conn.execute(query, params)
+        self._conn.commit()
+        return cursor.rowcount
+
+    def delete_from_source(self, user_id: int, source: str, since: date | None = None) -> int:
+        """Drop plans that came from one place, e.g. a timetable that has changed."""
+        query = "DELETE FROM plans WHERE user_id = ? AND source = ?"
+        params: list[object] = [user_id, source]
+        if since is not None:
+            query += " AND day >= ?"
+            params.append(since.isoformat())
         cursor = self._conn.execute(query, params)
         self._conn.commit()
         return cursor.rowcount

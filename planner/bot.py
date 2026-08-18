@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from html import escape
 from typing import Awaitable, Callable
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, PhotoSize, Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import (
@@ -24,11 +24,20 @@ from telegram.ext import (
 from .agenda import DAY_END, DAY_START, clashing, free_gaps, local_now, local_today
 from .parsing import Entry, ParseError, parse_date, parse_entries, parse_entry, parse_time
 from .storage import DEFAULT_AGENDA_AT, DEFAULT_UTC_OFFSET_MINUTES, Plan, Storage
+from .timetable import (
+    Class,
+    TimetableError,
+    classes_from_image,
+    classes_from_text,
+    week_dates,
+)
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("PLANNER_DB", "planner.sqlite3")
 NUDGE_AHEAD = timedelta(minutes=30)
+TIMETABLE = "timetable"
+SEMESTER_WEEKS = 14
 
 Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
@@ -152,6 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             SAMPLE,
             "Then <code>/today</code> for the plan, <code>/done 3</code> to tick something off, "
             "<code>/commands</code> for everything else.",
+            "Studying? Send a photo of your class timetable and I'll put the whole term in.",
         ],
     )
 
@@ -449,6 +459,122 @@ async def free(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _week_one(args: list[str], today: date) -> date:
+    """The Monday of teaching week one — this week's Monday unless told otherwise."""
+    given = today
+    if args:
+        try:
+            given = parse_date(" ".join(args), today)
+        except ParseError:
+            given = today
+    return given - timedelta(days=given.weekday())
+
+
+def _weeks_label(weeks: tuple[int, ...]) -> str:
+    """`1,2,3,5` reads as `1–3,5`."""
+    parts: list[str] = []
+    for week in weeks:
+        if parts and week == int(parts[-1].split("–")[-1]) + 1:
+            parts[-1] = f"{parts[-1].split('–')[0]}–{week}"
+            continue
+        parts.append(str(week))
+    return ",".join(parts)
+
+
+def _class_rows(classes: list[Class], weeks: int) -> list[tuple[str, ...]]:
+    return [
+        (
+            "MonTueWedThuFriSatSun"[lesson.weekday * 3 :][:3],
+            f"{lesson.start.strftime('%H:%M')}–{lesson.end.strftime('%H:%M')}",
+            lesson.title,
+            f"wk {_weeks_label(lesson.weeks)}" if lesson.weeks else f"wk 1–{weeks}",
+        )
+        for lesson in sorted(classes, key=lambda item: (item.weekday, item.start))
+    ]
+
+
+async def _import_classes(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    classes: list[Class],
+    args: list[str],
+) -> None:
+    """Put every class of the term into the diary, replacing an earlier import."""
+    storage = _storage(context)
+    user_id = update.effective_user.id
+    today = _today(storage, user_id)
+    if not classes:
+        await _send_html(
+            update,
+            [
+                "I couldn't find any classes in that.",
+                "Send the timetable screenshot itself, or type the rows like "
+                "<code>MON 0930-1120 IE4727 LEC S2-B3A_06</code>.",
+            ],
+        )
+        return
+
+    week_one = _week_one(args, today)
+    weeks = max((max(lesson.weeks) for lesson in classes if lesson.weeks), default=SEMESTER_WEEKS)
+    storage.delete_from_source(user_id, TIMETABLE, since=week_one)
+    dated = week_dates(classes, week_one, weeks)
+    for day, lesson in dated:
+        storage.add_plan(user_id, day, lesson.title, lesson.start, lesson.end, source=TIMETABLE)
+
+    await _send_html(
+        update,
+        [
+            f"📚 <b>Timetable added</b> — {len(classes)} classes, {len(dated)} sessions",
+            _block(_aligned(_class_rows(classes, weeks))),
+            f"Week 1 starts {escape(week_one.strftime('%a %d %b %Y'))}. "
+            "Send <code>/timetable clear</code> to remove them, or "
+            "<code>/timetable 17 Aug</code> to redo it from another week 1.",
+        ],
+    )
+
+
+async def _import_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    photo: PhotoSize,
+    args: list[str],
+) -> None:
+    picture = await (await photo.get_file()).download_as_bytearray()
+    try:
+        classes = classes_from_image(bytes(picture))
+    except TimetableError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    await _import_classes(update, context, classes, args)
+
+
+async def timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/timetable — import a class timetable, sent as a screenshot or typed out."""
+    storage = _storage(context)
+    user_id = update.effective_user.id
+    args = list(context.args or [])
+    if args and args[0].lower() == "clear":
+        removed = storage.delete_from_source(user_id, TIMETABLE, since=_today(storage, user_id))
+        await _send_html(update, [f"🗑 Removed {removed} timetable sessions from today on."])
+        return
+
+    replied = update.message.reply_to_message
+    photo = update.message.photo or (replied.photo if replied else None)
+    if photo:
+        await _import_photo(update, context, photo[-1], args)
+        return
+
+    body = "\n".join((update.message.text or "").splitlines()[1:])
+    await _import_classes(update, context, classes_from_text(body), args)
+
+
+async def timetable_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A photo on its own is read as a timetable."""
+    words = (update.message.caption or "").split()
+    args = [word for word in words if not word.startswith("/")]
+    await _import_photo(update, context, update.message.photo[-1], args)
+
+
 async def reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/reminders on|off|08:00 [+8] — the morning agenda and 30-minute heads-ups."""
     storage = _storage(context)
@@ -564,6 +690,13 @@ COMMANDS: tuple[Command, ...] = (
     Command(("todo", "open"), "/todo", "Everything still open", todo, "Your day"),
     Command(("free", "gaps"), "/free [date]", "Where your free time is", free, "Your day"),
     Command(
+        ("timetable", "classes"),
+        "/timetable [wk 1 date]",
+        "Import a class timetable",
+        timetable,
+        "Planning",
+    ),
+    Command(
         ("reminders", "remind"),
         "/reminders on|off|08:00",
         "Morning agenda + 30-min nudges",
@@ -586,6 +719,7 @@ def build_application(token: str, db_path: str = DB_PATH) -> Application:
     application.bot_data["storage"] = Storage(db_path)
     for command in COMMANDS:
         application.add_handler(CommandHandler(list(command.names), command.handler))
+    application.add_handler(MessageHandler(filters.PHOTO, timetable_photo))
     application.add_handler(MessageHandler(filters.COMMAND, unknown))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, add))
     if application.job_queue is not None:

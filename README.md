@@ -24,6 +24,33 @@ Each plan gets a number of its own (`#3`) counting from 1 for every user, which
 is what `/done`, `/move` and `/delete` take. Overlapping blocks are logged but
 flagged as a clash.
 
+## Class timetables
+
+Send a photo of your timetable and the bot reads the grid, then writes every
+class of the term into your plans:
+
+```
+📚 Timetable added — 5 classes, 62 sessions
+Mon  09:30–11:20  IE4727 LEC @ S2-B3A_06     wk 1–11
+Mon  14:30–17:20  ES5003 LEC @ LT19          wk 1–13
+Fri  10:30–12:20  HW0288 TUT @ LHN-TR+18     wk 2–13
+```
+
+Week 1 is taken to be the current week unless you say otherwise, as a caption
+or with the command: `/timetable 17 Aug`. Sending it again replaces the last
+import rather than doubling it, and `/timetable clear` removes the classes from
+today onwards. If the picture reads badly, type the rows instead — one class a
+line, naming its day:
+
+```
+/timetable
+MON 0930-1120 IE4727 LEC S2-B3A_06 Wk1-11
+FRI 1030-1220 HW0288 TUT LHN-TR+18 Wk2-13
+```
+
+Reading pictures needs Tesseract (`apt-get install tesseract-ocr`); the
+`Dockerfile` installs it.
+
 ## Your day
 
 | Command | Purpose |
@@ -45,6 +72,7 @@ flagged as a clash.
 | `/move 3 tomorrow 4pm-5pm` | Reschedule it |
 | `/delete 3` | Remove it |
 | `/clear [day\|all]` | Wipe a day, after a confirmation |
+| `/timetable [wk 1 date]` | Import a class timetable (`/timetable clear` removes it) |
 
 ## Reminders
 

@@ -5,6 +5,7 @@ import pytest
 from planner.agenda import clashing, free_gaps, local_today, span
 from planner.parsing import ParseError, parse_date, parse_entries, parse_entry, parse_time
 from planner.storage import Plan, Storage
+from planner.timetable import classes_from_cells, classes_from_text, week_dates
 
 TODAY = date(2026, 8, 11)  # a Tuesday
 
@@ -127,6 +128,59 @@ def test_nudges_are_sent_once(tmp_path):
     assert [plan.id for plan in storage.pending_nudges(1, TODAY)] == [ref]
     storage.mark_nudged(1, ref)
     assert storage.pending_nudges(1, TODAY) == []
+    storage.close()
+
+
+TIMETABLE = """
+MON 0930-1120 IE4727 LEC/STU S2-B3A_06 Wk1-11
+MON 1430-1720 ES5003 LEC/STU LT19
+FRI 1030-1220 HW0288 TUT LHN-TR+18 Wk2-13
+"""
+
+
+def test_reads_a_typed_timetable():
+    classes = classes_from_text(TIMETABLE)
+    assert [(lesson.weekday, lesson.start, lesson.end, lesson.title) for lesson in classes] == [
+        (0, time(9, 30), time(11, 20), "IE4727 LEC @ S2-B3A_06"),
+        (0, time(14, 30), time(17, 20), "ES5003 LEC @ LT19"),
+        (4, time(10, 30), time(12, 20), "HW0288 TUT @ LHN-TR+18"),
+    ]
+
+
+def test_reads_the_weeks_a_class_runs_in():
+    weeks = [lesson.weeks for lesson in classes_from_text(TIMETABLE)]
+    assert weeks == [tuple(range(1, 12)), (), tuple(range(2, 14))]
+    assert classes_from_text("MON 0930to1120 IE4727 LEC Wk12,13")[0].weeks == (12, 13)
+
+
+def test_ocr_slips_are_read_as_the_course_code():
+    cells = [(0, ["1E4727", "LEC/STU", "S2-B3A_06", "0930tol120"])]
+    assert classes_from_cells(cells)[0].code == "IE4727"
+
+
+def test_a_class_spanning_rows_is_only_listed_once():
+    cell = (0, ["IE4727", "LEC/STU", "S2-B3A_06", "0930to1120", "Wk1-11"])
+    assert len(classes_from_cells([cell, cell])) == 1
+
+
+def test_lines_without_a_class_are_ignored():
+    assert classes_from_text("Academic Year 2026, Semester 1\nLegend: LEC = lecture") == []
+
+
+def test_classes_become_a_date_each_week_they_run():
+    classes = classes_from_text(TIMETABLE)
+    dated = week_dates(classes, date(2026, 8, 10), 13)  # a Monday
+    assert dated[0] == (date(2026, 8, 10), classes[0])
+    assert [day for day, lesson in dated if lesson is classes[2]][0] == date(2026, 8, 21)
+    assert len(dated) == 11 + 13 + 12
+
+
+def test_a_timetable_import_replaces_the_last_one(tmp_path):
+    storage = Storage(tmp_path / "planner.sqlite3")
+    storage.add_plan(1, TODAY, "Gym", time(9, 0), None)
+    storage.add_plan(1, TODAY, "IE4727 LEC", time(9, 30), time(11, 20), source="timetable")
+    assert storage.delete_from_source(1, "timetable", since=TODAY) == 1
+    assert [plan.title for plan in storage.open_plans(1)] == ["Gym"]
     storage.close()
 
 

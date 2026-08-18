@@ -84,6 +84,35 @@ Reading pictures needs Tesseract (`apt-get install tesseract-ocr`); the
 | `/clear [day\|all]` | Wipe a day, after a confirmation |
 | `/timetable 10 Aug recess 28 Sep` | Import a class timetable (`/timetable clear` removes it) |
 
+## The assistant: calendar, mail and files
+
+`/connect` gives you a Google consent link. Once it's tapped, you can just say
+what you need and the bot does it on your own account:
+
+```
+meet Ada tomorrow 3pm about the renewal, add a Meet link
+and email her the contract from my Drive
+```
+
+That books the event, invites Ada, creates the Meet link, finds "contract" in
+your Drive and mails it to her with the link in the body. It also handles
+"move my 3pm to Friday", "cancel the standup", "what's on Thursday", "find the
+NDA in my Drive" and "any mail from Ada about the invoice". Anything without a
+calendar, mail or file word in it is still read as a plan for the diary;
+`/ask <sentence>` forces the assistant, `/disconnect` revokes the access.
+
+It needs a Google OAuth client (Calendar, Gmail and Drive APIs enabled) and the
+same `GEMINI_API_KEY` the timetable reader uses:
+
+```bash
+fly secrets set GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
+    GOOGLE_REDIRECT_URI=https://<app>.fly.dev/oauth/callback
+```
+
+The redirect URI must match the one listed on the OAuth client. Tokens are kept
+per user in the same SQLite database, and only the chat that ran `/connect` can
+use them.
+
 ## Reminders
 
 `/reminders on` sends the day's agenda each morning at 08:00 (GMT+8 by default)

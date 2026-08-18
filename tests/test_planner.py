@@ -1,7 +1,8 @@
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 
+from planner import assistant, bot
 from planner.agenda import clashes_with, clashing, free_gaps, local_today, span
 from planner.bot import _term
 from planner.parsing import ParseError, parse_date, parse_entries, parse_entry, parse_time
@@ -283,3 +284,52 @@ def test_clearing_a_day_leaves_other_days(tmp_path):
     assert storage.delete_plans(1, TODAY) == 1
     assert [plan.day for plan in storage.open_plans(1)] == [date(2026, 8, 12)]
     storage.close()
+
+
+def test_a_google_grant_is_remembered_and_spent_once(tmp_path):
+    storage = Storage(tmp_path / "planner.sqlite3")
+    later = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
+    storage.save_google(1, "me@gmail.com", "refresh", "access", later)
+    account = storage.get_google(1)
+    assert account is not None
+    assert (account.email, account.refresh_token, account.expires_at) == (
+        "me@gmail.com",
+        "refresh",
+        later,
+    )
+    storage.start_google_link("state123", 1, 55)
+    assert storage.take_google_link("state123") == (1, 55)
+    assert storage.take_google_link("state123") is None
+    assert storage.forget_google(1) is True
+    assert storage.get_google(1) is None
+    storage.close()
+
+
+def test_the_assistant_reads_the_model_s_steps(monkeypatch):
+    answer = (
+        '{"reply": "Booking it", "steps": [{"do": "create_event", "title": "Ada",'
+        ' "start": "2026-08-12T15:00", "end": "2026-08-12T16:00", "meet": true},'
+        ' {"do": "nonsense"}, "not a step"]}'
+    )
+    monkeypatch.setattr(assistant.model, "ask_json", lambda prompt, question: answer)
+    reply, steps = assistant.plan_steps("meet Ada", datetime(2026, 8, 11, 9, 0))
+    assert reply == "Booking it"
+    assert [step["do"] for step in steps] == ["create_event", "nonsense"]
+
+
+def test_a_model_answer_that_is_not_json_asks_for_nothing(monkeypatch):
+    monkeypatch.setattr(assistant.model, "ask_json", lambda prompt, question: "sorry?")
+    assert assistant.plan_steps("meet Ada", datetime(2026, 8, 11, 9, 0)) == ("", [])
+
+
+def test_wall_clock_times_from_the_model_take_the_user_s_zone():
+    stamp = assistant._local("2026-08-12T15:00", 480)
+    assert stamp.utcoffset() == timedelta(hours=8)
+    assert stamp.hour == 15
+
+
+def test_only_mail_and_meeting_talk_goes_to_the_assistant():
+    assert bot.ASSISTANT_HINT.search("email Ada the contract")
+    assert bot.ASSISTANT_HINT.search("reschedule my 3pm meeting to Friday")
+    assert not bot.ASSISTANT_HINT.search("9am-11am Gym")
+    assert not bot.ASSISTANT_HINT.search("buy milk")

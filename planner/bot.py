@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from html import escape
 from typing import Awaitable, Callable
 
 from telegram import BotCommand, PhotoSize, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -22,6 +24,7 @@ from telegram.ext import (
     filters,
 )
 
+from . import assistant, google
 from .agenda import (
     DAY_END,
     DAY_START,
@@ -173,13 +176,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Then <code>/today</code> for the plan, <code>/done 3</code> to tick something off, "
             "<code>/commands</code> for everything else.",
             "Studying? Send a photo of your class timetable and I'll put the whole term in.",
+            "Connect Google with <code>/connect</code> and I'll also book meetings, send "
+            "invites and email files — just say what you need.",
         ],
     )
 
 
 async def commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["📋 <b>Commands</b>"]
-    for section in ("Planning", "Your day", "Reminders", "Help"):
+    for section in ("Planning", "Your day", "Assistant", "Reminders", "Help"):
         rows = [
             (command.usage, command.summary)
             for command in COMMANDS
@@ -750,6 +755,79 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("I don't know that one — /commands lists them all.")
 
 
+ASSISTANT_HINT = re.compile(
+    r"\b(email|e-mail|mail|gmail|inbox|invite|invitation|attach|attachment|contract|"
+    r"drive|file|document|doc|send|forward|reply|meeting|meet|zoom|call|schedule|"
+    r"reschedule|postpone|cancel|book|calendar)\b",
+    re.IGNORECASE,
+)
+
+
+async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Hand over a one-tap consent link for the person's Google account."""
+    storage = _storage(context)
+    if not google.configured():
+        await update.message.reply_text(
+            "Google isn't set up on this bot yet — it needs GOOGLE_CLIENT_ID and "
+            "GOOGLE_CLIENT_SECRET."
+        )
+        return
+    state = secrets.token_urlsafe(24)
+    storage.start_google_link(state, update.effective_user.id, update.effective_chat.id)
+    await _send_html(
+        update,
+        [
+            "🔗 <b>Connect Google</b>",
+            f'<a href="{escape(google.consent_url(state))}">Tap here to allow calendar, '
+            "mail and files</a>, then just tell me what you need.",
+            "<code>/disconnect</code> revokes it again.",
+        ],
+    )
+
+
+async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    storage = _storage(context)
+    dropped = await google.disconnect(storage, update.effective_user.id)
+    await update.message.reply_text(
+        "Google disconnected." if dropped else "No Google account was connected."
+    )
+
+
+async def _assist(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    storage = _storage(context)
+    user_id = update.effective_user.id
+    if storage.get_google(user_id) is None:
+        await update.message.reply_text("Connect your Google account first with /connect.")
+        return
+    offset = _offset(storage, user_id)
+    await update.message.chat.send_action(ChatAction.TYPING)
+    result = await assistant.handle(storage, user_id, text, local_now(offset), offset)
+    await _send_html(update, [escape(line) for line in result.lines])
+
+
+async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Do whatever the sentence asks of the calendar, mail and files."""
+    text = " ".join(context.args or [])
+    if not text:
+        await update.message.reply_text(
+            "Tell me what you need, e.g. /ask meet Ada tomorrow 3pm with a Meet link "
+            "and email her the contract."
+        )
+        return
+    await _assist(update, context, text)
+
+
+async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A plan line goes in the diary; anything about mail or meetings goes to the assistant."""
+    storage = _storage(context)
+    text = update.message.text or ""
+    connected = storage.get_google(update.effective_user.id) is not None
+    if connected and ASSISTANT_HINT.search(text):
+        await _assist(update, context, text)
+        return
+    await add(update, context)
+
+
 COMMANDS: tuple[Command, ...] = (
     Command(("plan", "add"), "/plan <line>", "Add a block or a task", add, "Planning"),
     Command(("move",), "/move 3 tomorrow 4pm", "Reschedule a plan", move, "Planning"),
@@ -777,6 +855,15 @@ COMMANDS: tuple[Command, ...] = (
         reminders,
         "Reminders",
     ),
+    Command(
+        ("ask", "assistant"),
+        "/ask <what you need>",
+        "Calendar, mail and files",
+        ask,
+        "Assistant",
+    ),
+    Command(("connect",), "/connect", "Link your Google account", connect, "Assistant"),
+    Command(("disconnect",), "/disconnect", "Unlink Google", disconnect, "Assistant"),
     Command(("commands", "cmds"), "/commands", "This list", commands, "Help"),
     Command(("help", "start"), "/help", "How to plan your day", start, "Help"),
 )
@@ -795,7 +882,7 @@ def build_application(token: str, db_path: str = DB_PATH) -> Application:
         application.add_handler(CommandHandler(list(command.names), command.handler))
     application.add_handler(MessageHandler(filters.PHOTO, timetable_photo))
     application.add_handler(MessageHandler(filters.COMMAND, unknown))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, add))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
     if application.job_queue is not None:
         application.job_queue.run_repeating(tick, interval=60, first=10)
     return application

@@ -11,22 +11,14 @@ import base64
 import io
 import json
 import os
-import time
 
-import httpx
 from PIL import Image
+
+from .model import gemini_urls, sent, text_of
 
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 URL = "https://api.openai.com/v1/chat/completions"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-# whichever answers: the free tier turns one model away as overloaded fairly often
-GEMINI_MODELS = tuple(
-    os.environ.get("GEMINI_MODEL", "gemini-flash-latest,gemini-3.5-flash").split(",")
-)
-TIMEOUT = 150.0
 WIDEST = 1600  # a whole-page screenshot is far bigger than the model needs
-TRIES = 4
-BUSY = (429, 500, 503)
 
 PROMPT = """You are reading a university class timetable, a grid whose columns \
 are the days of the week.
@@ -68,28 +60,10 @@ def _shrunk(image: bytes) -> str:
     return base64.b64encode(kept.getvalue()).decode()
 
 
-def _sent(
-    urls: tuple[str, ...], headers: dict[str, str], body: dict[str, object]
-) -> httpx.Response:
-    """Post, waiting out the busy answers these free tiers hand back now and then.
-
-    Each try moves on to the next address given, so a model that is overloaded
-    hands the work to its stand-in rather than failing the whole reading.
-    """
-    for attempt in range(TRIES):
-        url = urls[attempt % len(urls)]
-        response = httpx.post(url, headers=headers, timeout=TIMEOUT, json=body)
-        if response.status_code not in BUSY or attempt == TRIES - 1:
-            response.raise_for_status()
-            return response
-        time.sleep(2 * (attempt + 1))
-    raise httpx.HTTPError("unreachable")
-
-
 def _ask_openai(image: bytes) -> str:
     key = os.environ["OPENAI_API_KEY"]
     picture = _shrunk(image)
-    response = _sent(
+    response = sent(
         (URL,),
         {"Authorization": f"Bearer {key}"},
         {
@@ -116,8 +90,8 @@ def _ask_gemini(image: bytes) -> str:
     """Google's model reads pictures just as well and has a free tier."""
     key = os.environ["GEMINI_API_KEY"]
     picture = _shrunk(image)
-    response = _sent(
-        tuple(f"{GEMINI_URL}/{model}:generateContent" for model in GEMINI_MODELS),
+    response = sent(
+        gemini_urls(),
         {"x-goog-api-key": key},
         {
             "contents": [
@@ -134,8 +108,7 @@ def _ask_gemini(image: bytes) -> str:
             },
         },
     )
-    parts = response.json()["candidates"][0]["content"]["parts"]
-    return "".join(part.get("text", "") for part in parts)
+    return text_of(response.json())
 
 
 def rows_from_answer(answer: str) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
 
 DEFAULT_UTC_OFFSET_MINUTES = 480  # GMT+8
@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS terms (
     week_one TEXT NOT NULL,
     breaks TEXT NOT NULL DEFAULT '',
     classes TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS google_accounts (
+    user_id INTEGER PRIMARY KEY,
+    email TEXT NOT NULL DEFAULT '',
+    refresh_token TEXT NOT NULL,
+    access_token TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00'
+);
+
+CREATE TABLE IF NOT EXISTS google_links (
+    state TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    made_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS reminders (
@@ -65,6 +80,17 @@ class Term:
 
     week_one: date
     breaks: tuple[date, ...] = ()
+
+
+@dataclass(frozen=True)
+class GoogleAccount:
+    """One person's Google grant: the lasting refresh token and the current key."""
+
+    user_id: int
+    email: str
+    refresh_token: str
+    access_token: str
+    expires_at: datetime
 
 
 @dataclass(frozen=True)
@@ -260,6 +286,73 @@ class Storage:
             ),
         )
         self._conn.commit()
+
+    def save_google(
+        self,
+        user_id: int,
+        email: str,
+        refresh_token: str,
+        access_token: str,
+        expires_at: datetime,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO google_accounts (user_id, email, refresh_token, access_token, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                email = excluded.email,
+                refresh_token = excluded.refresh_token,
+                access_token = excluded.access_token,
+                expires_at = excluded.expires_at
+            """,
+            (user_id, email, refresh_token, access_token, expires_at.isoformat()),
+        )
+        self._conn.commit()
+
+    def save_google_access(self, user_id: int, access_token: str, expires_at: datetime) -> None:
+        """Keep the freshly refreshed key so the next request doesn't refresh again."""
+        self._conn.execute(
+            "UPDATE google_accounts SET access_token = ?, expires_at = ? WHERE user_id = ?",
+            (access_token, expires_at.isoformat(), user_id),
+        )
+        self._conn.commit()
+
+    def get_google(self, user_id: int) -> GoogleAccount | None:
+        row = self._conn.execute(
+            "SELECT * FROM google_accounts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return GoogleAccount(
+            user_id=row["user_id"],
+            email=row["email"],
+            refresh_token=row["refresh_token"],
+            access_token=row["access_token"],
+            expires_at=datetime.fromisoformat(row["expires_at"]),
+        )
+
+    def forget_google(self, user_id: int) -> bool:
+        cursor = self._conn.execute("DELETE FROM google_accounts WHERE user_id = ?", (user_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def start_google_link(self, state: str, user_id: int, chat_id: int) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO google_links (state, user_id, chat_id) VALUES (?, ?, ?)",
+            (state, user_id, chat_id),
+        )
+        self._conn.commit()
+
+    def take_google_link(self, state: str) -> tuple[int, int] | None:
+        """Who started this sign-in, spent so the link can't be replayed."""
+        row = self._conn.execute(
+            "SELECT user_id, chat_id FROM google_links WHERE state = ?", (state,)
+        ).fetchone()
+        if row is None:
+            return None
+        self._conn.execute("DELETE FROM google_links WHERE state = ?", (state,))
+        self._conn.commit()
+        return row["user_id"], row["chat_id"]
 
     def get_reminder(self, user_id: int) -> Reminder | None:
         row = self._conn.execute(
